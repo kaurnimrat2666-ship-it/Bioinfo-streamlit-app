@@ -1,1 +1,1 @@
-# Bioinfo-streamlit-app
+# bioinfo-streamlit-app
