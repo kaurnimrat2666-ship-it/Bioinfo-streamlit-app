@@ -3,6 +3,7 @@ from Bio.Seq import Seq
 from Bio.SeqUtils.ProtParam import ProteinAnalysis
 import io
 import re
+import socket
 import datetime
 from PIL import Image, ImageDraw, ImageFont
 
@@ -18,6 +19,8 @@ if "results" not in st.session_state:
     st.session_state.results = None
 if "mutation" not in st.session_state:
     st.session_state.mutation = None
+if "identification" not in st.session_state:
+    st.session_state.identification = None
 
 
 def get_sequence(fasta):
@@ -70,22 +73,30 @@ def find_best_orf(seq):
 
 
 def identify_protein(protein_str):
-    # tries to find the protein name and organism using NCBI BLAST
-    # (needs internet - if it fails for any reason we just say so)
+    # tries to find the protein name and organism using NCBI BLAST.
+    # Uses the smaller "swissprot" database (curated, much faster than
+    # searching the full "nr" database, which can take several minutes)
+    # and a timeout so the app never just hangs if the network is slow.
+    old_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(60)
     try:
         from Bio.Blast import NCBIWWW, NCBIXML
-        result_handle = NCBIWWW.qblast("blastp", "nr", protein_str, hitlist_size=1)
+        result_handle = NCBIWWW.qblast("blastp", "swissprot", protein_str, hitlist_size=1)
         record = NCBIXML.read(result_handle)
         if not record.alignments:
-            return "Not found", "Not found"
+            return "No match found", "No match found"
 
         title = record.alignments[0].title
         organism_match = re.search(r"\[(.*?)\]", title)
         organism = organism_match.group(1) if organism_match else "Unknown"
         name = title.split("|")[-1].split("[")[0].strip()
         return name, organism
+    except socket.timeout:
+        return "Timed out - try again later", "Timed out - try again later"
     except Exception:
         return "Could not identify (no internet or no match found)", "Could not identify"
+    finally:
+        socket.setdefaulttimeout(old_timeout)
 
 
 def build_text_report(data):
@@ -144,17 +155,12 @@ if st.button("Analyze Sequence"):
             protein = str(Seq(orf).translate(to_stop=True))
             analysed = ProteinAnalysis(protein)
 
-            with st.spinner("Identifying protein..."):
-                protein_name, organism = identify_protein(protein)
-
             results["ORF Length (bp)"] = len(orf)
             results["Protein Sequence"] = protein
             results["Molecular Weight"] = round(analysed.molecular_weight(), 2)
             results["Isoelectric Point"] = round(analysed.isoelectric_point(), 2)
             results["Aromaticity"] = round(analysed.aromaticity(), 3)
             results["Instability Index"] = round(analysed.instability_index(), 2)
-            results["Protein Name"] = protein_name
-            results["Organism"] = organism
 
             st.session_state.results = results
             st.session_state.orf = orf
@@ -164,6 +170,7 @@ if st.button("Analyze Sequence"):
             st.session_state.orf = None
 
         st.session_state.mutation = None
+        st.session_state.identification = None
 
 if st.session_state.results:
     r = st.session_state.results
@@ -184,8 +191,18 @@ if st.session_state.results:
         st.write("Instability Index:", r["Instability Index"])
 
         st.subheader("Protein Identification")
-        st.write("Protein Name:", r["Protein Name"])
-        st.write("Organism:", r["Organism"])
+        st.write(
+            "This looks up the protein against a database, so it needs internet "
+            "and can take up to a minute."
+        )
+        if st.button("Identify Protein Name & Organism"):
+            with st.spinner("Searching database..."):
+                name, organism = identify_protein(r["Protein Sequence"])
+                st.session_state.identification = {"Protein Name": name, "Organism": organism}
+
+        if st.session_state.identification:
+            st.write("Protein Name:", st.session_state.identification["Protein Name"])
+            st.write("Organism:", st.session_state.identification["Organism"])
 
         st.subheader("Check the Protein Structure")
         st.write("Copy the sequence below and paste it into any of these free tools:")
@@ -223,6 +240,8 @@ if st.session_state.results:
 
     st.subheader("Save Results")
     report_data = dict(r)
+    if st.session_state.identification:
+        report_data.update(st.session_state.identification)
     if st.session_state.mutation:
         report_data.update(st.session_state.mutation)
 
