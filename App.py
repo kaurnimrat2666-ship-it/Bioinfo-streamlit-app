@@ -3,9 +3,12 @@ from Bio.Seq import Seq
 from Bio.SeqUtils.ProtParam import ProteinAnalysis
 import io
 import re
+import math
 import datetime
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from PIL import Image, ImageDraw, ImageFont
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (needed for 3D projection)
 
 st.title("In Silico Gene Prediction and Protein Characterization")
 
@@ -19,8 +22,21 @@ if "results" not in st.session_state:
     st.session_state.results = None
 if "mutation" not in st.session_state:
     st.session_state.mutation = None
-if "identification" not in st.session_state:
-    st.session_state.identification = None
+
+# --- simplified Chou-Fasman propensity table (classic published values) ---
+# used to predict secondary structure locally, with no internet needed
+HELIX_PROP = {"A": 1.42, "R": 0.98, "N": 0.67, "D": 1.01, "C": 0.70, "Q": 1.11,
+              "E": 1.51, "G": 0.57, "H": 1.00, "I": 1.08, "L": 1.21, "K": 1.16,
+              "M": 1.45, "F": 1.13, "P": 0.57, "S": 0.77, "T": 0.83, "W": 1.08,
+              "Y": 0.69, "V": 1.06}
+SHEET_PROP = {"A": 0.83, "R": 0.93, "N": 0.89, "D": 0.54, "C": 1.19, "Q": 1.10,
+              "E": 0.37, "G": 0.75, "H": 0.87, "I": 1.60, "L": 1.30, "K": 0.74,
+              "M": 1.05, "F": 1.38, "P": 0.55, "S": 0.75, "T": 1.19, "W": 1.37,
+              "Y": 1.47, "V": 1.70}
+TURN_PROP = {"A": 0.66, "R": 0.95, "N": 1.56, "D": 1.46, "C": 1.19, "Q": 0.98,
+             "E": 0.74, "G": 1.56, "H": 0.95, "I": 0.47, "L": 0.59, "K": 1.01,
+             "M": 0.60, "F": 0.60, "P": 1.52, "S": 1.43, "T": 0.96, "W": 0.96,
+             "Y": 1.14, "V": 0.50}
 
 
 def get_sequence(fasta):
@@ -72,14 +88,76 @@ def find_best_orf(seq):
     return max(candidates, key=len)
 
 
+def predict_secondary_structure(protein_seq):
+    # simple per-residue prediction: pick whichever of helix/sheet/turn
+    # has the highest propensity for that amino acid (Chou-Fasman values).
+    # This is a basic approximation, not a state-of-the-art predictor,
+    # but it runs instantly and needs no internet connection.
+    ss = ""
+    for aa in protein_seq:
+        h = HELIX_PROP.get(aa, 1.0)
+        e = SHEET_PROP.get(aa, 1.0)
+        t = TURN_PROP.get(aa, 1.0)
+        best = max([("H", h), ("E", e), ("C", t)], key=lambda pair: pair[1])
+        ss += best[0]
+    return ss
+
+
+def structure_fractions(ss_string):
+    n = len(ss_string)
+    return {
+        "Helix (H) %": round(100 * ss_string.count("H") / n, 1),
+        "Sheet (E) %": round(100 * ss_string.count("E") / n, 1),
+        "Coil/Turn (C) %": round(100 * ss_string.count("C") / n, 1),
+    }
+
+
+def draw_3d_backbone(ss_string):
+    # Builds a rough 3D backbone trace from the secondary structure string:
+    # helix residues twist like a real alpha helix, sheet residues stay
+    # mostly straight, coil residues wander gently. This is only a
+    # simplified illustration of the fold shape, not a real atomic model -
+    # getting the true 3D structure needs dedicated modelling software.
+    x, y, z = 0.0, 0.0, 0.0
+    angle = 0.0
+    xs, ys, zs = [x], [y], [z]
+
+    for i, s in enumerate(ss_string):
+        if s == "H":
+            angle += 100
+            rise = 1.5
+        elif s == "E":
+            angle += 10
+            rise = 3.4
+        else:
+            angle += 40 + 15 * math.sin(i)
+            rise = 3.0
+
+        rad = math.radians(angle)
+        x += math.cos(rad) * 1.5
+        y += math.sin(rad) * 1.5
+        z += rise
+        xs.append(x)
+        ys.append(y)
+        zs.append(z)
+
+    fig = plt.figure(figsize=(4.5, 4.5))
+    ax = fig.add_subplot(111, projection="3d")
+    ax.plot(xs, ys, zs, color="steelblue", linewidth=2)
+    ax.set_axis_off()
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", bbox_inches="tight", dpi=120)
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
+
+
 def _run_blast(protein_str):
-    # the actual NCBI BLAST call - this is the part that can be slow,
-    # sometimes taking well over a minute depending on NCBI's server load
     from Bio.Blast import NCBIWWW, NCBIXML
     result_handle = NCBIWWW.qblast("blastp", "swissprot", protein_str, hitlist_size=1)
     record = NCBIXML.read(result_handle)
     if not record.alignments:
-        return "No match found", "No match found"
+        return "Unidentified", "Unknown"
 
     title = record.alignments[0].title
     organism_match = re.search(r"\[(.*?)\]", title)
@@ -88,19 +166,18 @@ def _run_blast(protein_str):
     return name, organism
 
 
-def identify_protein(protein_str, wait_seconds=45):
-    # Runs the BLAST search in a background thread with a hard time limit.
-    # qblast does not reliably respect normal timeouts (the search job can
-    # just sit "processing" on NCBI's end), so this guarantees the app always
-    # gets an answer back within wait_seconds instead of looking frozen.
+def identify_protein(protein_str, wait_seconds=15):
+    # Runs in a background thread with a strict time limit, so this can
+    # never hang the app - if NCBI doesn't answer in time, it just reports
+    # that instead of leaving the app stuck.
     try:
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(_run_blast, protein_str)
             return future.result(timeout=wait_seconds)
     except FutureTimeoutError:
-        return "Timed out - NCBI is taking too long, try again later", "Timed out"
+        return "Unidentified (lookup took too long)", "Unknown"
     except Exception:
-        return "Could not identify (no internet or no match found)", "Could not identify"
+        return "Unidentified (no internet access)", "Unknown"
 
 
 def build_text_report(data):
@@ -158,6 +235,10 @@ if st.button("Analyze Sequence"):
         if orf:
             protein = str(Seq(orf).translate(to_stop=True))
             analysed = ProteinAnalysis(protein)
+            ss_string = predict_secondary_structure(protein)
+
+            with st.spinner("Analyzing protein (up to 15 seconds)..."):
+                protein_name, organism = identify_protein(protein)
 
             results["ORF Length (bp)"] = len(orf)
             results["Protein Sequence"] = protein
@@ -165,16 +246,20 @@ if st.button("Analyze Sequence"):
             results["Isoelectric Point"] = round(analysed.isoelectric_point(), 2)
             results["Aromaticity"] = round(analysed.aromaticity(), 3)
             results["Instability Index"] = round(analysed.instability_index(), 2)
+            results["Protein Name"] = protein_name
+            results["Organism"] = organism
+            results["Secondary Structure"] = ss_string
+            results.update(structure_fractions(ss_string))
 
             st.session_state.results = results
             st.session_state.orf = orf
+            st.session_state.ss_string = ss_string
         else:
             results["ORF"] = "No valid ORF found"
             st.session_state.results = results
             st.session_state.orf = None
 
         st.session_state.mutation = None
-        st.session_state.identification = None
 
 if st.session_state.results:
     r = st.session_state.results
@@ -185,8 +270,9 @@ if st.session_state.results:
 
     if st.session_state.orf:
         st.subheader("Predicted Protein")
+        st.write("Protein Name:", r["Protein Name"])
+        st.write("Organism:", r["Organism"])
         st.write("ORF Length:", r["ORF Length (bp)"], "bp")
-        st.code(r["Protein Sequence"])
 
         st.subheader("Protein Properties")
         st.write("Molecular Weight:", r["Molecular Weight"])
@@ -194,32 +280,19 @@ if st.session_state.results:
         st.write("Aromaticity:", r["Aromaticity"])
         st.write("Instability Index:", r["Instability Index"])
 
-        st.subheader("Protein Identification")
-        st.write(
-            "This looks up the protein against a database, so it needs internet "
-            "and can take up to 45 seconds."
-        )
-        if st.button("Identify Protein Name & Organism"):
-            with st.spinner("Searching database (up to 45 seconds)..."):
-                name, organism = identify_protein(r["Protein Sequence"])
-                st.session_state.identification = {"Protein Name": name, "Organism": organism}
+        st.subheader("Primary Structure")
+        st.code(r["Protein Sequence"])
 
-        if st.session_state.identification:
-            st.write("Protein Name:", st.session_state.identification["Protein Name"])
-            st.write("Organism:", st.session_state.identification["Organism"])
+        st.subheader("Secondary Structure")
+        st.write("H = helix, E = sheet, C = coil/turn (predicted per residue)")
+        st.code(r["Secondary Structure"])
+        st.write("Helix:", r["Helix (H) %"], "%  Sheet:", r["Sheet (E) %"],
+                  "%  Coil/Turn:", r["Coil/Turn (C) %"], "%")
 
-        st.write(
-            "If this keeps timing out, you can also search manually: copy the "
-            "protein sequence above and paste it into NCBI BLAST yourself:"
-        )
-        st.write("https://blast.ncbi.nlm.nih.gov/Blast.cgi?PROGRAM=blastp&PAGE_TYPE=BlastSearch")
-
-        st.subheader("Check the Protein Structure")
-        st.write("Copy the sequence below and paste it into any of these free tools:")
-        st.code(">predicted_protein\n" + r["Protein Sequence"])
-        st.write("Secondary structure - PSIPRED: http://bioinf.cs.ucl.ac.uk/psipred/")
-        st.write("Tertiary structure - AlphaFold: https://alphafold.ebi.ac.uk/")
-        st.write("Tertiary structure - SWISS-MODEL: https://swissmodel.expasy.org/")
+        st.subheader("Tertiary Structure")
+        st.write("Approximate 3D backbone shape based on the predicted secondary structure "
+                  "(illustration only, not an exact atomic model):")
+        st.image(draw_3d_backbone(st.session_state.ss_string))
 
         st.subheader("Mutation Analysis")
         position = st.number_input("Position to mutate (1-based index):",
@@ -250,8 +323,6 @@ if st.session_state.results:
 
     st.subheader("Save Results")
     report_data = dict(r)
-    if st.session_state.identification:
-        report_data.update(st.session_state.identification)
     if st.session_state.mutation:
         report_data.update(st.session_state.mutation)
 
