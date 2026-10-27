@@ -347,28 +347,98 @@ if analyze:
     st.divider()
     st.subheader("Download Analysis Report")
 
+    st.divider()
+    st.subheader("Download Complete Analysis Report")
+
     report = (
         "IN SILICO GENE PREDICTION AND PROTEIN CHARACTERIZATION\n"
-        "======================================================\n\n"
-        f"Sequence length: {len(dna)} nucleotides\n"
-        f"GC content: {gc:.2f}%\n"
-        f"Candidate ORFs detected: {len(orfs)}\n\n"
+        "=" * 60 + "\n\n"
+
+        "1. DNA SEQUENCE ANALYSIS\n"
+        "-" * 35 + "\n"
+        f"DNA Sequence:\n{dna}\n\n"
+        f"Sequence Length: {len(dna)} nucleotides\n"
+        f"GC Content: {gc:.2f}%\n"
+        f"Candidate ORFs Detected: {len(orfs)}\n\n"
     )
 
-    for number, item in enumerate(orfs, 1):
+    report += "2. SIX-FRAME ORF ANALYSIS\n"
+    report += "-" * 35 + "\n"
+
+    if orfs:
+        for number, item in enumerate(orfs, 1):
+            report += (
+                f"\nORF {number}\n"
+                f"Strand: {item['Strand']}\n"
+                f"Reading Frame: {item['Strand']}{item['Frame']}\n"
+                f"Start Position: {item['Start']}\n"
+                f"End Position: {item['End']}\n"
+                f"Length: {item['Length (nt)']} nucleotides\n"
+                f"DNA Sequence: {item['DNA']}\n"
+            )
+    else:
+        report += "No complete ATG-to-stop-codon ORFs were detected.\n"
+
+    report += "\n\n3. SELECTED ORF AND PROTEIN ANALYSIS\n"
+    report += "-" * 40 + "\n"
+
+    if orfs:
         report += (
-            f"ORF {number}\n"
-            f"Strand: {item['Strand']}\n"
-            f"Frame: {item['Frame']}\n"
-            f"Start position: {item['Start']}\n"
-            f"End position: {item['End']}\n"
-            f"Length: {item['Length (nt)']} nt\n\n"
+            f"Selected ORF: ORF {selected_index + 1}\n"
+            f"Strand: {selected_orf['Strand']}\n"
+            f"Reading Frame: {selected_orf['Strand']}{selected_orf['Frame']}\n"
+            f"Start Position: {selected_orf['Start']}\n"
+            f"End Position: {selected_orf['End']}\n"
+            f"ORF Length: {selected_orf['Length (nt)']} nucleotides\n\n"
+            f"Selected ORF DNA Sequence:\n{orf_dna}\n\n"
+            f"Translated Protein Sequence:\n{protein}\n\n"
         )
 
+        if protein:
+            report += "4. PROTEIN CHARACTERIZATION\n"
+            report += "-" * 35 + "\n"
+
+            properties = protein_properties(protein)
+
+            for property_name, value in properties.items():
+                report += f"{property_name}: {value}\n"
+
+            report += "\n\n5. AMINO ACID COMPOSITION\n"
+            report += "-" * 35 + "\n"
+
+            if "aa_table" in locals():
+                report += aa_table.to_string(index=False)
+                report += "\n\n"
+
+            report += "6. CODON USAGE ANALYSIS\n"
+            report += "-" * 35 + "\n"
+
+            if "codon_table" in locals() and not codon_table.empty:
+                report += codon_table.to_string(index=False)
+                report += "\n\n"
+            else:
+                report += "No codon information available.\n\n"
+
+    report += (
+        "\n7. INTERPRETATION AND LIMITATIONS\n"
+        "-" * 40 + "\n"
+        "GC Content represents the percentage of guanine and cytosine "
+        "bases in the input DNA sequence.\n"
+        "ORFs are computationally identified candidate coding regions "
+        "that begin with ATG and end with a stop codon.\n"
+        "Protein properties are calculated from the translated amino "
+        "acid sequence.\n"
+        "Amino acid composition shows the count and percentage of each "
+        "amino acid in the selected protein.\n"
+        "Codon usage shows the frequency of codons in the selected ORF.\n"
+        "These computational results do not experimentally confirm gene "
+        "identity, protein function, or biological activity.\n"
+    )
+
     st.download_button(
-        "Download Report",
+        label="Download Complete Analysis Report",
         data=report,
-        file_name="bioinformatics_analysis_report.txt",
+        file_name="complete_bioinformatics_analysis_report.txt",
         mime="text/plain"
     )
 
