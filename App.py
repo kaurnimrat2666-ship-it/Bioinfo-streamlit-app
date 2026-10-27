@@ -1,344 +1,254 @@
 import streamlit as st
-from Bio.Seq import Seq
-from Bio.SeqUtils.ProtParam import ProteinAnalysis
-import io
-import re
-import math
-import datetime
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-from PIL import Image, ImageDraw, ImageFont
+import pandas as pd
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (needed for 3D projection)
+from Bio.Seq import Seq
+from Bio.SeqUtils import gc_fraction
+from Bio.SeqUtils.ProtParam import ProteinAnalysis
+from collections import Counter
 
-st.title("In Silico Gene Prediction and Protein Characterization")
+st.set_page_config(page_title="DNA Analysis Tool", page_icon="🧬", layout="wide")
 
-VALID_BASES = set("ACGTN")
-STOP_CODONS = ["TAA", "TAG", "TGA"]
-
-# session_state keeps the results saved so that clicking "Apply Mutation"
-# (a button inside the analysis block) does not make the whole analysis
-# disappear when the page reruns
-if "results" not in st.session_state:
-    st.session_state.results = None
-if "mutation" not in st.session_state:
-    st.session_state.mutation = None
-
-# --- simplified Chou-Fasman propensity table (classic published values) ---
-# used to predict secondary structure locally, with no internet needed
-HELIX_PROP = {"A": 1.42, "R": 0.98, "N": 0.67, "D": 1.01, "C": 0.70, "Q": 1.11,
-              "E": 1.51, "G": 0.57, "H": 1.00, "I": 1.08, "L": 1.21, "K": 1.16,
-              "M": 1.45, "F": 1.13, "P": 0.57, "S": 0.77, "T": 0.83, "W": 1.08,
-              "Y": 0.69, "V": 1.06}
-SHEET_PROP = {"A": 0.83, "R": 0.93, "N": 0.89, "D": 0.54, "C": 1.19, "Q": 1.10,
-              "E": 0.37, "G": 0.75, "H": 0.87, "I": 1.60, "L": 1.30, "K": 0.74,
-              "M": 1.05, "F": 1.38, "P": 0.55, "S": 0.75, "T": 1.19, "W": 1.37,
-              "Y": 1.47, "V": 1.70}
-TURN_PROP = {"A": 0.66, "R": 0.95, "N": 1.56, "D": 1.46, "C": 1.19, "Q": 0.98,
-             "E": 0.74, "G": 1.56, "H": 0.95, "I": 0.47, "L": 0.59, "K": 1.01,
-             "M": 0.60, "F": 0.60, "P": 1.52, "S": 1.43, "T": 0.96, "W": 0.96,
-             "Y": 1.14, "V": 0.50}
+st.title("🧬 In Silico Gene Prediction & Protein Characterization")
+st.write("DNA sequence analysis using Python, Biopython and Streamlit.")
 
 
-def get_sequence(fasta):
-    lines = fasta.strip().split("\n")
-    seq = ""
-    for line in lines:
-        if not line.startswith(">"):
-            seq += line.strip()
-    return seq.upper()
+def parse_sequence(text):
+    return "".join(
+        line.strip() for line in text.splitlines()
+        if line.strip() and not line.startswith(">")
+    ).upper().replace(" ", "")
 
 
-def is_valid_sequence(seq):
-    if len(seq) == 0:
-        return False, "Please paste a sequence first."
-    extra_chars = set(seq) - VALID_BASES
-    if extra_chars:
-        return False, "Sequence has letters other than A, T, G, C, N: " + ", ".join(extra_chars)
-    if len(seq) < 6:
-        return False, "Sequence is too short to have a start and stop codon."
-    return True, ""
+def find_orfs(dna):
+    results = []
+    stop_codons = {"TAA", "TAG", "TGA"}
+    n = len(dna)
+
+    for strand, seq in [
+        ("+", dna),
+        ("-", str(Seq(dna).reverse_complement()))
+    ]:
+        for frame in range(3):
+            i = frame
+
+            while i + 3 <= len(seq):
+                if seq[i:i+3] == "ATG":
+                    j = i + 3
+
+                    while j + 3 <= len(seq):
+                        if seq[j:j+3] in stop_codons:
+                            start = i + 1
+                            end = j + 3
+
+                            if strand == "-":
+                                original_start = n - end + 1
+                                original_end = n - start + 1
+                            else:
+                                original_start = start
+                                original_end = end
+
+                            results.append({
+                                "Strand": strand,
+                                "Frame": frame + 1,
+                                "Start": original_start,
+                                "End": original_end,
+                                "Length (nt)": end - start + 1,
+                                "DNA": seq[i:j+3]
+                            })
+                            break
+                        j += 3
+                i += 3
+
+    return sorted(results, key=lambda x: (x["Start"], x["End"]))
 
 
-def orfs_in_frame(seq, frame):
-    orfs = []
-    i = frame
-    while i < len(seq) - 2:
-        if seq[i:i + 3] == "ATG":
-            for j in range(i, len(seq) - 2, 3):
-                if seq[j:j + 3] in STOP_CODONS:
-                    orfs.append(seq[i:j + 3])
-                    break
-        i += 3
-    return orfs
+fasta = st.text_area(
+    "Paste DNA FASTA sequence",
+    height=150,
+    placeholder=">Example\nATGGCTGCTGAATAA"
+)
 
+if st.button("Analyze Sequence", type="primary"):
+    dna = parse_sequence(fasta)
 
-def find_best_orf(seq):
-    # check all 3 forward frames and 3 frames on the reverse complement,
-    # so we don't miss the real gene just because it's on the other strand
-    candidates = []
-    for frame in range(3):
-        candidates += orfs_in_frame(seq, frame)
+    if not dna or any(base not in "ATGCN" for base in dna):
+        st.error("Enter a valid DNA sequence containing A, T, G, C or N.")
+        st.stop()
 
-    rev_seq = str(Seq(seq).reverse_complement())
-    for frame in range(3):
-        candidates += orfs_in_frame(rev_seq, frame)
+    if "N" in dna:
+        st.warning("Unknown bases (N) may affect ORF detection.")
 
-    if not candidates:
-        return None
-    return max(candidates, key=len)
+    gc = gc_fraction(dna) * 100
+    orfs = find_orfs(dna)
 
+    st.session_state["dna"] = dna
+    st.session_state["orfs"] = orfs
 
-def predict_secondary_structure(protein_seq):
-    # simple per-residue prediction: pick whichever of helix/sheet/turn
-    # has the highest propensity for that amino acid (Chou-Fasman values).
-    # This is a basic approximation, not a state-of-the-art predictor,
-    # but it runs instantly and needs no internet connection.
-    ss = ""
-    for aa in protein_seq:
-        h = HELIX_PROP.get(aa, 1.0)
-        e = SHEET_PROP.get(aa, 1.0)
-        t = TURN_PROP.get(aa, 1.0)
-        best = max([("H", h), ("E", e), ("C", t)], key=lambda pair: pair[1])
-        ss += best[0]
-    return ss
+    st.subheader("📊 Sequence Summary")
+    a, b, c = st.columns(3)
+    a.metric("Sequence Length", f"{len(dna)} nt")
+    b.metric("GC Content", f"{gc:.2f}%")
+    c.metric("Candidate ORFs", len(orfs))
 
+    st.subheader("🧬 Six-Frame ORFs")
 
-def structure_fractions(ss_string):
-    n = len(ss_string)
-    return {
-        "Helix (H) %": round(100 * ss_string.count("H") / n, 1),
-        "Sheet (E) %": round(100 * ss_string.count("E") / n, 1),
-        "Coil/Turn (C) %": round(100 * ss_string.count("C") / n, 1),
-    }
-
-
-def draw_3d_backbone(ss_string):
-    # Builds a rough 3D backbone trace from the secondary structure string:
-    # helix residues twist like a real alpha helix, sheet residues stay
-    # mostly straight, coil residues wander gently. This is only a
-    # simplified illustration of the fold shape, not a real atomic model -
-    # getting the true 3D structure needs dedicated modelling software.
-    x, y, z = 0.0, 0.0, 0.0
-    angle = 0.0
-    xs, ys, zs = [x], [y], [z]
-
-    for i, s in enumerate(ss_string):
-        if s == "H":
-            angle += 100
-            rise = 1.5
-        elif s == "E":
-            angle += 10
-            rise = 3.4
-        else:
-            angle += 40 + 15 * math.sin(i)
-            rise = 3.0
-
-        rad = math.radians(angle)
-        x += math.cos(rad) * 1.5
-        y += math.sin(rad) * 1.5
-        z += rise
-        xs.append(x)
-        ys.append(y)
-        zs.append(z)
-
-    fig = plt.figure(figsize=(4.5, 4.5))
-    ax = fig.add_subplot(111, projection="3d")
-    ax.plot(xs, ys, zs, color="steelblue", linewidth=2)
-    ax.set_axis_off()
-    buf = io.BytesIO()
-    plt.savefig(buf, format="png", bbox_inches="tight", dpi=120)
-    plt.close(fig)
-    buf.seek(0)
-    return buf.getvalue()
-
-
-def _run_blast(protein_str):
-    from Bio.Blast import NCBIWWW, NCBIXML
-    result_handle = NCBIWWW.qblast("blastp", "swissprot", protein_str, hitlist_size=1)
-    record = NCBIXML.read(result_handle)
-    if not record.alignments:
-        return "Unidentified", "Unknown"
-
-    title = record.alignments[0].title
-    organism_match = re.search(r"\[(.*?)\]", title)
-    organism = organism_match.group(1) if organism_match else "Unknown"
-    name = title.split("|")[-1].split("[")[0].strip()
-    return name, organism
-
-
-def identify_protein(protein_str, wait_seconds=15):
-    # Runs in a background thread with a strict time limit, so this can
-    # never hang the app - if NCBI doesn't answer in time, it just reports
-    # that instead of leaving the app stuck.
-    try:
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(_run_blast, protein_str)
-            return future.result(timeout=wait_seconds)
-    except FutureTimeoutError:
-        return "Unidentified (lookup took too long)", "Unknown"
-    except Exception:
-        return "Unidentified (no internet access)", "Unknown"
-
-
-def build_text_report(data):
-    lines = ["Gene Prediction and Protein Characterization - Results",
-             "Generated: " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-             ""]
-    for key, value in data.items():
-        lines.append(f"{key}: {value}")
-    return "\n".join(lines)
-
-
-def build_image_report(data):
-    lines = ["Gene Prediction and Protein Characterization - Results",
-             "Generated: " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), ""]
-    for key, value in data.items():
-        lines.append(f"{key}: {value}")
-
-    font = ImageFont.load_default()
-    line_height = 18
-    width = 900
-    height = line_height * (len(lines) + 2)
-
-    img = Image.new("RGB", (width, height), "white")
-    draw = ImageDraw.Draw(img)
-    y = 10
-    for line in lines:
-        draw.text((10, y), line, fill="black", font=font)
-        y += line_height
-
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
-
-
-st.write("Paste your nucleotide FASTA sequence below:")
-fasta_input = st.text_area("FASTA Sequence")
-
-if st.button("Analyze Sequence"):
-    sequence = get_sequence(fasta_input)
-    valid, msg = is_valid_sequence(sequence)
-
-    if not valid:
-        st.error(msg)
-        st.session_state.results = None
+    if not orfs:
+        st.info("No complete ATG-to-stop ORFs detected.")
     else:
-        orf = find_best_orf(sequence)
-        results = {
-            "Sequence Length (bp)": len(sequence),
-            "A count": sequence.count("A"),
-            "T count": sequence.count("T"),
-            "G count": sequence.count("G"),
-            "C count": sequence.count("C"),
-        }
-
-        if orf:
-            protein = str(Seq(orf).translate(to_stop=True))
-            analysed = ProteinAnalysis(protein)
-            ss_string = predict_secondary_structure(protein)
-
-            with st.spinner("Analyzing protein (up to 15 seconds)..."):
-                protein_name, organism = identify_protein(protein)
-
-            results["ORF Length (bp)"] = len(orf)
-            results["Protein Sequence"] = protein
-            results["Molecular Weight"] = round(analysed.molecular_weight(), 2)
-            results["Isoelectric Point"] = round(analysed.isoelectric_point(), 2)
-            results["Aromaticity"] = round(analysed.aromaticity(), 3)
-            results["Instability Index"] = round(analysed.instability_index(), 2)
-            results["Protein Name"] = protein_name
-            results["Organism"] = organism
-            results["Secondary Structure"] = ss_string
-            results.update(structure_fractions(ss_string))
-
-            st.session_state.results = results
-            st.session_state.orf = orf
-            st.session_state.ss_string = ss_string
-        else:
-            results["ORF"] = "No valid ORF found"
-            st.session_state.results = results
-            st.session_state.orf = None
-
-        st.session_state.mutation = None
-
-if st.session_state.results:
-    r = st.session_state.results
-
-    st.subheader("Sequence Analysis")
-    st.write("Sequence Length:", r["Sequence Length (bp)"], "bp")
-    st.write("A:", r["A count"], "  T:", r["T count"], "  G:", r["G count"], "  C:", r["C count"])
-
-    if st.session_state.orf:
-        st.subheader("Predicted Protein")
-        st.write("Protein Name:", r["Protein Name"])
-        st.write("Organism:", r["Organism"])
-        st.write("ORF Length:", r["ORF Length (bp)"], "bp")
-
-        st.subheader("Protein Properties")
-        st.write("Molecular Weight:", r["Molecular Weight"])
-        st.write("Isoelectric Point:", r["Isoelectric Point"])
-        st.write("Aromaticity:", r["Aromaticity"])
-        st.write("Instability Index:", r["Instability Index"])
-
-        st.subheader("Primary Structure")
-        st.code(r["Protein Sequence"])
-
-        st.subheader("Secondary Structure")
-        st.write("H = helix, E = sheet, C = coil/turn (predicted per residue)")
-        st.code(r["Secondary Structure"])
-        st.write("Helix:", r["Helix (H) %"], "%  Sheet:", r["Sheet (E) %"],
-                  "%  Coil/Turn:", r["Coil/Turn (C) %"], "%")
-
-        st.subheader("Tertiary Structure")
-        st.write("Approximate 3D backbone shape based on the predicted secondary structure "
-                  "(illustration only, not an exact atomic model):")
-        st.image(draw_3d_backbone(st.session_state.ss_string))
-
-        st.subheader("Mutation Analysis")
-        position = st.number_input("Position to mutate (1-based index):",
-                                    min_value=1, max_value=len(st.session_state.orf), step=1)
-        new_base = st.selectbox("New base:", ["A", "T", "G", "C"])
-
-        if st.button("Apply Mutation"):
-            mutated_orf = list(st.session_state.orf)
-            mutated_orf[position - 1] = new_base
-            mutated_orf = "".join(mutated_orf)
-            mutated_protein = str(Seq(mutated_orf).translate(to_stop=True))
-            mut_analysed = ProteinAnalysis(mutated_protein)
-
-            st.session_state.mutation = {
-                "Mutated Protein Sequence": mutated_protein,
-                "Mutated Molecular Weight": round(mut_analysed.molecular_weight(), 2),
-                "Mutated Isoelectric Point": round(mut_analysed.isoelectric_point(), 2),
+        table = pd.DataFrame([
+            {
+                "Strand": x["Strand"],
+                "Frame": f'{x["Strand"]}{x["Frame"]}',
+                "Start": x["Start"],
+                "End": x["End"],
+                "Length (nt)": x["Length (nt)"]
             }
+            for x in orfs
+        ])
+        st.dataframe(table, use_container_width=True)
 
-        if st.session_state.mutation:
-            m = st.session_state.mutation
-            st.write("Mutated Protein Sequence:")
-            st.code(m["Mutated Protein Sequence"])
-            st.write("Mutated Molecular Weight:", m["Mutated Molecular Weight"])
-            st.write("Mutated Isoelectric Point:", m["Mutated Isoelectric Point"])
-    else:
-        st.warning("No valid ORF found in the sequence.")
-
-    st.subheader("Save Results")
-    report_data = dict(r)
-    if st.session_state.mutation:
-        report_data.update(st.session_state.mutation)
-
-    file_format = st.radio("Download as:", ["Text (.txt)", "Image (.png)"])
-
-    if file_format == "Text (.txt)":
-        st.download_button(
-            "Download Results",
-            data=build_text_report(report_data),
-            file_name="sequence_analysis.txt",
-            mime="text/plain",
+        st.caption(
+            "Start and end positions use 1-based coordinates on the original "
+            "DNA sequence. Frame numbers refer to the scanned strand."
         )
-    else:
-        st.download_button(
-            "Download Results",
-            data=build_image_report(report_data),
-            file_name="sequence_analysis.png",
-            mime="image/png",
+
+        st.subheader("🎨 ORF Visualization")
+        fig, ax = plt.subplots(figsize=(10, 3))
+
+        ys = {("+", 1): 5, ("+", 2): 4, ("+", 3): 3,
+              ("-", 1): 2, ("-", 2): 1, ("-", 3): 0}
+
+        for key, y in ys.items():
+            ax.hlines(y, 1, max(len(dna), 2), linewidth=2)
+
+        for x in orfs:
+            y = ys[(x["Strand"], x["Frame"])]
+            ax.barh(
+                y, x["Length (nt)"],
+                left=x["Start"], height=0.35
+            )
+
+        ax.set_yticks(list(ys.values()))
+        ax.set_yticklabels(["+1", "+2", "+3", "-1", "-2", "-3"])
+        ax.set_xlim(1, max(len(dna), 2))
+        ax.set_xlabel("Position on original DNA (nt)")
+        ax.set_title("Candidate ORFs in Six Reading Frames")
+        ax.grid(axis="x", alpha=0.2)
+        plt.tight_layout()
+        st.pyplot(fig)
+        plt.close(fig)
+
+        labels = [
+            f'ORF {i+1}: {x["Strand"]}{x["Frame"]}, '
+            f'{x["Start"]}-{x["End"]}'
+            for i, x in enumerate(orfs)
+        ]
+
+        chosen = st.selectbox(
+            "Select an ORF for protein analysis",
+            range(len(orfs)),
+            format_func=lambda i: labels[i]
         )
+
+        selected = orfs[chosen]
+        protein = str(Seq(selected["DNA"]).translate(to_stop=True))
+
+        st.subheader("🧪 Protein Characterization")
+        st.write("**Translated protein sequence**")
+        st.code(protein or "No amino acids translated.")
+
+        if protein:
+            pa = ProteinAnalysis(protein)
+            props = {
+                "Protein Length (aa)": len(protein),
+                "Molecular Weight (Da)": round(pa.molecular_weight(), 2),
+                "Isoelectric Point": round(pa.isoelectric_point(), 2),
+                "Instability Index": round(pa.instability_index(), 2),
+                "Aliphatic Index": round(pa.aliphatic_index(), 2),
+                "GRAVY": round(pa.gravy(), 3)
+            }
+            st.dataframe(
+                pd.DataFrame(props.items(), columns=["Property", "Value"]),
+                use_container_width=True
+            )
+
+            st.write("**Amino Acid Composition**")
+            aa = pa.count_amino_acids()
+            st.bar_chart(pd.Series(aa, name="Count"))
+
+        st.subheader("🧬 Codon Usage")
+        codons = [
+            selected["DNA"][i:i+3]
+            for i in range(0, len(selected["DNA"])-3, 3)
+        ]
+        counts = Counter(codons)
+
+        codon_table = pd.DataFrame([
+            {
+                "Codon": codon,
+                "Amino Acid": str(Seq(codon).translate()),
+                "Count": count
+            }
+            for codon, count in sorted(counts.items())
+        ])
+
+        st.dataframe(codon_table, use_container_width=True)
+
+        st.subheader("🧫 Basic Mutation Comparison")
+        st.caption(
+            "This compares sequence translations; it does not confirm "
+            "biological effects."
+        )
+
+        pos = st.number_input(
+            "Nucleotide position within selected ORF",
+            min_value=1,
+            max_value=len(selected["DNA"]),
+            value=1
+        )
+        base = st.selectbox("Replacement base", ["A", "T", "G", "C"])
+
+        if st.button("Compare Mutation"):
+            original = selected["DNA"]
+            mutated = list(original)
+            mutated[int(pos)-1] = base
+            mutated = "".join(mutated)
+
+            p1 = str(Seq(original).translate())
+            p2 = str(Seq(mutated).translate())
+
+            st.write("Original protein:")
+            st.code(p1)
+            st.write("Mutated protein:")
+            st.code(p2)
+
+            if original[int(pos)-1] == base:
+                st.info("The selected base is unchanged.")
+            elif p1 == p2:
+                st.success("The translated amino-acid sequence is unchanged.")
+            else:
+                st.warning("The translated amino-acid sequence has changed.")
+
+    report = (
+        "BIOINFORMATICS SEQUENCE ANALYSIS REPORT\n"
+        f"Sequence length: {len(dna)} nt\n"
+        f"GC content: {gc:.2f}%\n"
+        f"Candidate ORFs: {len(orfs)}\n\n"
+    )
+
+    for i, x in enumerate(orfs, 1):
+        report += (
+            f"ORF {i}: strand {x['Strand']}, frame {x['Frame']}, "
+            f"start {x['Start']}, end {x['End']}, "
+            f"length {x['Length (nt)']} nt\n"
+        )
+
+    st.subheader("📄 Download Report")
+    st.download_button(
+        "Download Analysis Report",
+        data=report,
+        file_name="sequence_analysis_report.txt",
+        mime="text/plain"
+    )
+
+    st.success("Analysis completed!")
