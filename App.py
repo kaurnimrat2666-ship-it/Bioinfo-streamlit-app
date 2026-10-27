@@ -350,96 +350,136 @@ if analyze:
     st.divider()
     st.subheader("Download Complete Analysis Report")
 
-    report = (
-        "IN SILICO GENE PREDICTION AND PROTEIN CHARACTERIZATION\n"
-        "=" * 60 + "\n\n"
+    report_lines = [
+        "IN SILICO GENE PREDICTION AND PROTEIN CHARACTERIZATION",
+        "=" * 60,
+        "",
+        "1. DNA SEQUENCE ANALYSIS",
+        "-" * 35,
+        f"DNA Sequence:\n{dna}",
+        "",
+        f"Sequence Length: {len(dna)} nucleotides",
+        f"GC Content: {gc:.2f}%",
+        f"Candidate ORFs Detected: {len(orfs)}",
+        "",
+        "2. SIX-FRAME ORF ANALYSIS",
+        "-" * 35,
+    ]
 
-        "1. DNA SEQUENCE ANALYSIS\n"
-        "-" * 35 + "\n"
-        f"DNA Sequence:\n{dna}\n\n"
-        f"Sequence Length: {len(dna)} nucleotides\n"
-        f"GC Content: {gc:.2f}%\n"
-        f"Candidate ORFs Detected: {len(orfs)}\n\n"
-    )
-
-    report += "2. SIX-FRAME ORF ANALYSIS\n"
-    report += "-" * 35 + "\n"
-
+    # Add all detected ORFs
     if orfs:
         for number, item in enumerate(orfs, 1):
-            report += (
-                f"\nORF {number}\n"
-                f"Strand: {item['Strand']}\n"
-                f"Reading Frame: {item['Strand']}{item['Frame']}\n"
-                f"Start Position: {item['Start']}\n"
-                f"End Position: {item['End']}\n"
-                f"Length: {item['Length (nt)']} nucleotides\n"
-                f"DNA Sequence: {item['DNA']}\n"
-            )
+            report_lines.extend([
+                "",
+                f"ORF {number}",
+                f"Strand: {item['Strand']}",
+                f"Reading Frame: {item['Strand']}{item['Frame']}",
+                f"Start Position: {item['Start']}",
+                f"End Position: {item['End']}",
+                f"Length: {item['Length (nt)']} nucleotides",
+                f"DNA Sequence: {item['DNA']}",
+            ])
     else:
-        report += "No complete ATG-to-stop-codon ORFs were detected.\n"
-
-    report += "\n\n3. SELECTED ORF AND PROTEIN ANALYSIS\n"
-    report += "-" * 40 + "\n"
-
-    if orfs:
-        report += (
-            f"Selected ORF: ORF {selected_index + 1}\n"
-            f"Strand: {selected_orf['Strand']}\n"
-            f"Reading Frame: {selected_orf['Strand']}{selected_orf['Frame']}\n"
-            f"Start Position: {selected_orf['Start']}\n"
-            f"End Position: {selected_orf['End']}\n"
-            f"ORF Length: {selected_orf['Length (nt)']} nucleotides\n\n"
-            f"Selected ORF DNA Sequence:\n{orf_dna}\n\n"
-            f"Translated Protein Sequence:\n{protein}\n\n"
+        report_lines.append(
+            "No complete ATG-to-stop-codon ORFs were detected."
         )
 
+    report_lines.extend([
+        "",
+        "3. SELECTED ORF AND PROTEIN ANALYSIS",
+        "-" * 40,
+    ])
+
+    if orfs:
+        report_lines.extend([
+            f"Selected ORF: ORF {selected_index + 1}",
+            f"Strand: {selected_orf['Strand']}",
+            f"Reading Frame: {selected_orf['Strand']}{selected_orf['Frame']}",
+            f"Start Position: {selected_orf['Start']}",
+            f"End Position: {selected_orf['End']}",
+            f"ORF Length: {selected_orf['Length (nt)']} nucleotides",
+            "",
+            f"Selected ORF DNA Sequence:\n{orf_dna}",
+            "",
+            f"Translated Protein Sequence:\n{protein}",
+            "",
+        ])
+
         if protein:
-            report += "4. PROTEIN CHARACTERIZATION\n"
-            report += "-" * 35 + "\n"
+            report_lines.extend([
+                "4. PROTEIN CHARACTERIZATION",
+                "-" * 35,
+            ])
 
             properties = protein_properties(protein)
 
             for property_name, value in properties.items():
-                report += f"{property_name}: {value}\n"
+                report_lines.append(
+                    f"{property_name}: {value}"
+                )
 
-            report += "\n\n5. AMINO ACID COMPOSITION\n"
-            report += "-" * 35 + "\n"
+            report_lines.extend([
+                "",
+                "5. AMINO ACID COMPOSITION",
+                "-" * 35,
+            ])
 
+            # Include amino acid table if it was created in the app
             if "aa_table" in locals():
-                report += aa_table.to_string(index=False)
-                report += "\n\n"
+                report_lines.append(
+                    aa_table.to_string(index=False)
+                )
+            else:
+                report_lines.append(
+                    "Amino acid composition table is unavailable."
+                )
 
-            report += "6. CODON USAGE ANALYSIS\n"
-            report += "-" * 35 + "\n"
+            report_lines.extend([
+                "",
+                "6. CODON USAGE ANALYSIS",
+                "-" * 35,
+            ])
 
             if "codon_table" in locals() and not codon_table.empty:
-                report += codon_table.to_string(index=False)
-                report += "\n\n"
+                report_lines.append(
+                    codon_table.to_string(index=False)
+                )
             else:
-                report += "No codon information available.\n\n"
+                report_lines.append(
+                    "No codon information available."
+                )
 
-    report += (
-        "\n7. INTERPRETATION AND LIMITATIONS\n"
-        "-" * 40 + "\n"
+    else:
+        report_lines.append(
+            "No selected ORF or protein analysis is available."
+        )
+
+    report_lines.extend([
+        "",
+        "7. INTERPRETATION AND LIMITATIONS",
+        "-" * 40,
         "GC Content represents the percentage of guanine and cytosine "
-        "bases in the input DNA sequence.\n"
+        "bases in the input DNA sequence.",
         "ORFs are computationally identified candidate coding regions "
-        "that begin with ATG and end with a stop codon.\n"
+        "that begin with ATG and end with a stop codon.",
         "Protein properties are calculated from the translated amino "
-        "acid sequence.\n"
+        "acid sequence.",
         "Amino acid composition shows the count and percentage of each "
-        "amino acid in the selected protein.\n"
-        "Codon usage shows the frequency of codons in the selected ORF.\n"
+        "amino acid in the selected protein.",
+        "Codon usage shows the frequency of codons in the selected ORF.",
         "These computational results do not experimentally confirm gene "
-        "identity, protein function, or biological activity.\n"
-    )
+        "identity, protein function, or biological activity.",
+    ])
+
+    # Create the report once to prevent accidental repetition
+    report = "\n".join(report_lines)
 
     st.download_button(
         label="Download Complete Analysis Report",
         data=report,
         file_name="complete_bioinformatics_analysis_report.txt",
-        mime="text/plain"
+        mime="text/plain",
+        key="complete_analysis_report"
     )
 
     st.success("Analysis completed.")
