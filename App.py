@@ -6,15 +6,24 @@ from Bio.SeqUtils import gc_fraction
 from Bio.SeqUtils.ProtParam import ProteinAnalysis
 from collections import Counter
 
-st.set_page_config(page_title="DNA Analysis Tool", page_icon="🧬", layout="wide")
+st.set_page_config(
+    page_title="Bioinformatics Analysis",
+    page_icon="",
+    layout="wide"
+)
 
-st.title("🧬 In Silico Gene Prediction & Protein Characterization")
-st.write("DNA sequence analysis using Python, Biopython and Streamlit.")
+st.title("In Silico Gene Prediction and Protein Characterization")
+st.write(
+    "DNA sequence analysis using Python, Biopython and Streamlit."
+)
+
+st.divider()
 
 
 def parse_sequence(text):
     return "".join(
-        line.strip() for line in text.splitlines()
+        line.strip()
+        for line in text.splitlines()
         if line.strip() and not line.startswith(">")
     ).upper().replace(" ", "")
 
@@ -24,28 +33,30 @@ def find_orfs(dna):
     stop_codons = {"TAA", "TAG", "TGA"}
     n = len(dna)
 
-    for strand, seq in [
+    strands = [
         ("+", dna),
         ("-", str(Seq(dna).reverse_complement()))
-    ]:
+    ]
+
+    for strand, sequence in strands:
         for frame in range(3):
             i = frame
 
-            while i + 3 <= len(seq):
-                if seq[i:i+3] == "ATG":
+            while i + 3 <= len(sequence):
+                if sequence[i:i + 3] == "ATG":
                     j = i + 3
 
-                    while j + 3 <= len(seq):
-                        if seq[j:j+3] in stop_codons:
+                    while j + 3 <= len(sequence):
+                        if sequence[j:j + 3] in stop_codons:
                             start = i + 1
                             end = j + 3
 
-                            if strand == "-":
-                                original_start = n - end + 1
-                                original_end = n - start + 1
-                            else:
+                            if strand == "+":
                                 original_start = start
                                 original_end = end
+                            else:
+                                original_start = n - end + 1
+                                original_end = n - start + 1
 
                             results.append({
                                 "Strand": strand,
@@ -53,135 +64,220 @@ def find_orfs(dna):
                                 "Start": original_start,
                                 "End": original_end,
                                 "Length (nt)": end - start + 1,
-                                "DNA": seq[i:j+3]
+                                "DNA": sequence[i:j + 3]
                             })
                             break
+
                         j += 3
+
                 i += 3
 
-    return sorted(results, key=lambda x: (x["Start"], x["End"]))
+    return sorted(
+        results,
+        key=lambda x: (x["Start"], x["End"])
+    )
+
+
+def protein_properties(protein):
+    analysis = ProteinAnalysis(protein)
+    aa = analysis.count_amino_acids()
+    length = len(protein)
+
+    aliphatic_index = 100 * (
+        (aa.get("A", 0) / length)
+        + 2.9 * (aa.get("V", 0) / length)
+        + 3.9 * (
+            (aa.get("I", 0) + aa.get("L", 0)) / length
+        )
+    )
+
+    return {
+        "Protein Length (aa)": length,
+        "Molecular Weight (Da)": round(
+            analysis.molecular_weight(), 2
+        ),
+        "Isoelectric Point": round(
+            analysis.isoelectric_point(), 2
+        ),
+        "Aromaticity": round(analysis.aromaticity(), 4),
+        "Instability Index": round(
+            analysis.instability_index(), 2
+        ),
+        "Aliphatic Index": round(aliphatic_index, 2),
+        "GRAVY": round(analysis.gravy(), 4)
+    }
 
 
 fasta = st.text_area(
-    "Paste DNA FASTA sequence",
+    "Enter nucleotide FASTA sequence",
     height=150,
-    placeholder=">Example\nATGGCTGCTGAATAA"
+    placeholder=">Example_sequence\nATGGCTGCTGAATAA"
 )
 
-if st.button("Analyze Sequence", type="primary"):
+analyze = st.button("Analyze Sequence", type="primary")
+
+if analyze:
     dna = parse_sequence(fasta)
 
-    if not dna or any(base not in "ATGCN" for base in dna):
-        st.error("Enter a valid DNA sequence containing A, T, G, C or N.")
+    if not dna:
+        st.error("Please enter a DNA sequence.")
+        st.stop()
+
+    if any(base not in "ATGCN" for base in dna):
+        st.error("Use only A, T, G, C and N in the DNA sequence.")
         st.stop()
 
     if "N" in dna:
-        st.warning("Unknown bases (N) may affect ORF detection.")
+        st.warning(
+            "The sequence contains unknown bases (N); "
+            "some ORFs may not be detected."
+        )
 
     gc = gc_fraction(dna) * 100
     orfs = find_orfs(dna)
 
     st.session_state["dna"] = dna
     st.session_state["orfs"] = orfs
+    st.session_state["gc"] = gc
 
-    st.subheader("📊 Sequence Summary")
-    a, b, c = st.columns(3)
-    a.metric("Sequence Length", f"{len(dna)} nt")
-    b.metric("GC Content", f"{gc:.2f}%")
-    c.metric("Candidate ORFs", len(orfs))
+    st.subheader("Sequence Summary")
 
-    st.subheader("🧬 Six-Frame ORFs")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Sequence Length", f"{len(dna)} nt")
+    col2.metric("GC Content", f"{gc:.2f}%")
+    col3.metric("Candidate ORFs", len(orfs))
+
+    st.divider()
+    st.subheader("Six-Frame ORF Analysis")
 
     if not orfs:
-        st.info("No complete ATG-to-stop ORFs detected.")
+        st.info("No complete ATG-to-stop-codon ORFs were detected.")
     else:
-        table = pd.DataFrame([
+        orf_table = pd.DataFrame([
             {
-                "Strand": x["Strand"],
-                "Frame": f'{x["Strand"]}{x["Frame"]}',
-                "Start": x["Start"],
-                "End": x["End"],
-                "Length (nt)": x["Length (nt)"]
+                "Strand": item["Strand"],
+                "Frame": f'{item["Strand"]}{item["Frame"]}',
+                "Start Position": item["Start"],
+                "End Position": item["End"],
+                "Length (nt)": item["Length (nt)"]
             }
-            for x in orfs
+            for item in orfs
         ])
-        st.dataframe(table, use_container_width=True)
+
+        st.dataframe(orf_table, use_container_width=True)
 
         st.caption(
-            "Start and end positions use 1-based coordinates on the original "
-            "DNA sequence. Frame numbers refer to the scanned strand."
+            "Coordinates are 1-based on the original DNA sequence. "
+            "Frame labels refer to the strand being scanned."
         )
 
-        st.subheader("🎨 ORF Visualization")
+        st.subheader("ORF Visualization")
+
         fig, ax = plt.subplots(figsize=(10, 3))
 
-        ys = {("+", 1): 5, ("+", 2): 4, ("+", 3): 3,
-              ("-", 1): 2, ("-", 2): 1, ("-", 3): 0}
+        frame_positions = {
+            ("+", 1): 5,
+            ("+", 2): 4,
+            ("+", 3): 3,
+            ("-", 1): 2,
+            ("-", 2): 1,
+            ("-", 3): 0
+        }
 
-        for key, y in ys.items():
-            ax.hlines(y, 1, max(len(dna), 2), linewidth=2)
+        for key, y in frame_positions.items():
+            ax.hlines(y, 1, max(len(dna), 2), linewidth=1.5)
 
-        for x in orfs:
-            y = ys[(x["Strand"], x["Frame"])]
+        for item in orfs:
+            y = frame_positions[
+                (item["Strand"], item["Frame"])
+            ]
             ax.barh(
-                y, x["Length (nt)"],
-                left=x["Start"], height=0.35
+                y,
+                item["Length (nt)"],
+                left=item["Start"],
+                height=0.3
             )
 
-        ax.set_yticks(list(ys.values()))
-        ax.set_yticklabels(["+1", "+2", "+3", "-1", "-2", "-3"])
+        ax.set_yticks(list(frame_positions.values()))
+        ax.set_yticklabels(
+            ["+1", "+2", "+3", "-1", "-2", "-3"]
+        )
         ax.set_xlim(1, max(len(dna), 2))
         ax.set_xlabel("Position on original DNA (nt)")
         ax.set_title("Candidate ORFs in Six Reading Frames")
         ax.grid(axis="x", alpha=0.2)
         plt.tight_layout()
+
         st.pyplot(fig)
         plt.close(fig)
 
         labels = [
-            f'ORF {i+1}: {x["Strand"]}{x["Frame"]}, '
-            f'{x["Start"]}-{x["End"]}'
-            for i, x in enumerate(orfs)
+            f'ORF {i + 1} | {item["Strand"]}{item["Frame"]} | '
+            f'{item["Start"]}-{item["End"]}'
+            for i, item in enumerate(orfs)
         ]
 
-        chosen = st.selectbox(
-            "Select an ORF for protein analysis",
+        selected_index = st.selectbox(
+            "Select an ORF for detailed analysis",
             range(len(orfs)),
             format_func=lambda i: labels[i]
         )
 
-        selected = orfs[chosen]
-        protein = str(Seq(selected["DNA"]).translate(to_stop=True))
+        selected_orf = orfs[selected_index]
+        orf_dna = selected_orf["DNA"]
+        protein = str(Seq(orf_dna).translate(to_stop=True))
 
-        st.subheader("🧪 Protein Characterization")
-        st.write("**Translated protein sequence**")
-        st.code(protein or "No amino acids translated.")
+        st.divider()
+        st.subheader("Protein Characterization")
+
+        st.write("Selected ORF DNA sequence")
+        st.code(orf_dna)
+
+        st.write("Translated protein sequence")
+        st.code(protein if protein else "No amino acids translated.")
 
         if protein:
-            pa = ProteinAnalysis(protein)
-            props = {
-                "Protein Length (aa)": len(protein),
-                "Molecular Weight (Da)": round(pa.molecular_weight(), 2),
-                "Isoelectric Point": round(pa.isoelectric_point(), 2),
-                "Instability Index": round(pa.instability_index(), 2),
-                "Aliphatic Index": round(pa.aliphatic_index(), 2),
-                "GRAVY": round(pa.gravy(), 3)
-            }
+            properties = protein_properties(protein)
+
+            p1, p2, p3 = st.columns(3)
+            p1.metric(
+                "Protein Length",
+                f'{properties["Protein Length (aa)"]} aa'
+            )
+            p2.metric(
+                "Molecular Weight",
+                f'{properties["Molecular Weight (Da)"]} Da'
+            )
+            p3.metric(
+                "Isoelectric Point",
+                properties["Isoelectric Point"]
+            )
+
+            st.write("Additional protein properties")
             st.dataframe(
-                pd.DataFrame(props.items(), columns=["Property", "Value"]),
+                pd.DataFrame(
+                    properties.items(),
+                    columns=["Property", "Value"]
+                ),
                 use_container_width=True
             )
 
-            st.write("**Amino Acid Composition**")
-            aa = pa.count_amino_acids()
-            st.bar_chart(pd.Series(aa, name="Count"))
+            amino_acids = ProteinAnalysis(protein).count_amino_acids()
 
-        st.subheader("🧬 Codon Usage")
+            st.write("Amino Acid Composition")
+            st.bar_chart(
+                pd.Series(amino_acids, name="Count")
+            )
+
+        st.divider()
+        st.subheader("Codon Usage Analysis")
+
         codons = [
-            selected["DNA"][i:i+3]
-            for i in range(0, len(selected["DNA"])-3, 3)
+            orf_dna[i:i + 3]
+            for i in range(0, len(orf_dna) - 3, 3)
         ]
-        counts = Counter(codons)
+
+        codon_counts = Counter(codons)
 
         codon_table = pd.DataFrame([
             {
@@ -189,66 +285,89 @@ if st.button("Analyze Sequence", type="primary"):
                 "Amino Acid": str(Seq(codon).translate()),
                 "Count": count
             }
-            for codon, count in sorted(counts.items())
+            for codon, count in sorted(codon_counts.items())
         ])
 
-        st.dataframe(codon_table, use_container_width=True)
+        if not codon_table.empty:
+            st.dataframe(codon_table, use_container_width=True)
+            st.bar_chart(codon_table.set_index("Codon")["Count"])
+        else:
+            st.info("No codons available for display.")
 
-        st.subheader("🧫 Basic Mutation Comparison")
+        st.divider()
+        st.subheader("Basic Mutation Comparison")
+
         st.caption(
-            "This compares sequence translations; it does not confirm "
-            "biological effects."
+            "This feature compares translated sequences. "
+            "It does not establish the biological effect of a mutation."
         )
 
-        pos = st.number_input(
-            "Nucleotide position within selected ORF",
+        position = st.number_input(
+            "Nucleotide position within the selected ORF",
             min_value=1,
-            max_value=len(selected["DNA"]),
-            value=1
+            max_value=len(orf_dna),
+            value=1,
+            step=1
         )
-        base = st.selectbox("Replacement base", ["A", "T", "G", "C"])
+
+        replacement = st.selectbox(
+            "Replacement nucleotide",
+            ["A", "T", "G", "C"]
+        )
 
         if st.button("Compare Mutation"):
-            original = selected["DNA"]
-            mutated = list(original)
-            mutated[int(pos)-1] = base
-            mutated = "".join(mutated)
+            original_base = orf_dna[int(position) - 1]
 
-            p1 = str(Seq(original).translate())
-            p2 = str(Seq(mutated).translate())
+            mutated_list = list(orf_dna)
+            mutated_list[int(position) - 1] = replacement
+            mutated_dna = "".join(mutated_list)
 
-            st.write("Original protein:")
-            st.code(p1)
-            st.write("Mutated protein:")
-            st.code(p2)
+            original_protein = str(Seq(orf_dna).translate())
+            mutated_protein = str(Seq(mutated_dna).translate())
 
-            if original[int(pos)-1] == base:
-                st.info("The selected base is unchanged.")
-            elif p1 == p2:
+            left, right = st.columns(2)
+
+            with left:
+                st.write("Original protein")
+                st.code(original_protein)
+
+            with right:
+                st.write("Mutated protein")
+                st.code(mutated_protein)
+
+            if original_base == replacement:
+                st.info("The nucleotide has not changed.")
+            elif original_protein == mutated_protein:
                 st.success("The translated amino-acid sequence is unchanged.")
             else:
                 st.warning("The translated amino-acid sequence has changed.")
 
+    st.divider()
+    st.subheader("Download Analysis Report")
+
     report = (
-        "BIOINFORMATICS SEQUENCE ANALYSIS REPORT\n"
-        f"Sequence length: {len(dna)} nt\n"
+        "IN SILICO GENE PREDICTION AND PROTEIN CHARACTERIZATION\n"
+        "======================================================\n\n"
+        f"Sequence length: {len(dna)} nucleotides\n"
         f"GC content: {gc:.2f}%\n"
-        f"Candidate ORFs: {len(orfs)}\n\n"
+        f"Candidate ORFs detected: {len(orfs)}\n\n"
     )
 
-    for i, x in enumerate(orfs, 1):
+    for number, item in enumerate(orfs, 1):
         report += (
-            f"ORF {i}: strand {x['Strand']}, frame {x['Frame']}, "
-            f"start {x['Start']}, end {x['End']}, "
-            f"length {x['Length (nt)']} nt\n"
+            f"ORF {number}\n"
+            f"Strand: {item['Strand']}\n"
+            f"Frame: {item['Frame']}\n"
+            f"Start position: {item['Start']}\n"
+            f"End position: {item['End']}\n"
+            f"Length: {item['Length (nt)']} nt\n\n"
         )
 
-    st.subheader("📄 Download Report")
     st.download_button(
-        "Download Analysis Report",
+        "Download Report",
         data=report,
-        file_name="sequence_analysis_report.txt",
+        file_name="bioinformatics_analysis_report.txt",
         mime="text/plain"
     )
 
-    st.success("Analysis completed!")
+    st.success("Analysis completed.")
