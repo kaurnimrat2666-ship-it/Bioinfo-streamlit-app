@@ -116,7 +116,7 @@ fasta = st.text_area(
 
 analyze = st.button("Analyze Sequence", type="primary")
 
-if analyze:
+if analyze or "dna" in st.session_state:
     dna = parse_sequence(fasta)
 
     if not dna:
