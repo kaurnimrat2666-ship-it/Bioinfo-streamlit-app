@@ -345,65 +345,65 @@ if analyze or "dna" in st.session_state:
             st.info("No codons available for display.")
 
 
-   st.divider()
-st.subheader("Download Complete Analysis Report")
+    st.divider()
+    st.subheader("Download Complete Analysis Report")
 
-if orfs and protein:
+    if orfs and protein:
 
-    report_lines = [
-        "IN SILICO GENE PREDICTION AND PROTEIN CHARACTERIZATION",
-        "=" * 60,
-        "",
-        "1. INPUT DNA SEQUENCE",
-        "-" * 35,
-        dna,
-        "",
-        "2. SEQUENCE SUMMARY",
-        "-" * 35,
-        f"Sequence Length: {len(dna)} nucleotides",
-        f"GC Content: {gc:.2f}%",
-        f"Candidate ORFs Detected: {len(orfs)}",
-        "",
-        "3. SELECTED ORF",
-        "-" * 35,
-        f"Selected ORF: ORF {selected_index + 1}",
-        f"Start Position: {selected_orf['Start']}",
-        f"End Position: {selected_orf['End']}",
-        "",
-        "4. TRANSLATED PROTEIN SEQUENCE",
-        "-" * 35,
-        protein,
-        "",
-        "5. PROTEIN CHARACTERIZATION",
-        "-" * 35,
-        f"Protein Length: {len(protein)} amino acids",
-        f"Molecular Weight: {properties['Molecular Weight (Da)']} Da",
-        f"Isoelectric Point: {properties['Isoelectric Point']}",
-        f"GRAVY: {properties['GRAVY']}",
-        f"Instability Index: {properties['Instability Index']}",
-        f"Aromaticity: {properties['Aromaticity']}",
-        f"Aliphatic Index: {properties['Aliphatic Index']}",
-        "",
-        "6. AMINO ACID COMPOSITION",
-        "-" * 35,
-        aa_table.to_string(index=False),
-        "",
-        "7. CODON USAGE ANALYSIS",
-        "-" * 35,
-        codon_table.to_string(index=False)
-    ]
+        report_lines = [
+            "IN SILICO GENE PREDICTION AND PROTEIN CHARACTERIZATION",
+            "=" * 60,
+            "",
+            "1. INPUT DNA SEQUENCE",
+            "-" * 35,
+            dna,
+            "",
+            "2. SEQUENCE SUMMARY",
+            "-" * 35,
+            f"Sequence Length: {len(dna)} nucleotides",
+            f"GC Content: {gc:.2f}%",
+            f"Candidate ORFs Detected: {len(orfs)}",
+            "",
+            "3. SELECTED ORF",
+            "-" * 35,
+            f"Selected ORF: ORF {selected_index + 1}",
+            f"Start Position: {selected_orf['Start']}",
+            f"End Position: {selected_orf['End']}",
+            "",
+            "4. TRANSLATED PROTEIN SEQUENCE",
+            "-" * 35,
+            protein,
+            "",
+            "5. PROTEIN CHARACTERIZATION",
+            "-" * 35,
+            f"Protein Length: {len(protein)} amino acids",
+            f"Molecular Weight: {properties['Molecular Weight (Da)']} Da",
+            f"Isoelectric Point: {properties['Isoelectric Point']}",
+            f"GRAVY: {properties['GRAVY']}",
+            f"Instability Index: {properties['Instability Index']}",
+            f"Aromaticity: {properties['Aromaticity']}",
+            f"Aliphatic Index: {properties['Aliphatic Index']}",
+            "",
+            "6. AMINO ACID COMPOSITION",
+            "-" * 35,
+            aa_table.to_string(index=False),
+            "",
+            "7. CODON USAGE ANALYSIS",
+            "-" * 35,
+            codon_table.to_string(index=False)
+        ]
 
-    report = "\n".join(report_lines)
+        report = "\n".join(report_lines)
 
-    st.download_button(
-        label="Download Complete Analysis Report",
-        data=report,
-        file_name="Bioinformatics_Analysis_Report.txt",
-        mime="text/plain",
-        key="complete_analysis_report"
-    )
+        st.download_button(
+            label="Download Complete Analysis Report",
+            data=report,
+            file_name="Bioinformatics_Analysis_Report.txt",
+            mime="text/plain",
+            key="complete_analysis_report"
+        )
 
-else:
-    st.info("Report will be available after selecting an ORF with a translated protein.")
+    else:
+        st.info("Report will be available after selecting an ORF with a translated protein.")
 
-st.success("Analysis completed.")
+    st.success("Analysis completed.")
