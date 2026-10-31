@@ -5,14 +5,13 @@ from Bio.Seq import Seq
 from Bio.SeqUtils import gc_fraction
 from Bio.SeqUtils.ProtParam import ProteinAnalysis
 from collections import Counter
-import Bio
 
 st.set_page_config(
     page_title="Bioinformatics Analysis",
     page_icon="",
     layout="wide"
 )
-st.write("Biopython Version:", Bio.__version__)
+
 st.title("In Silico Gene Prediction and Protein Characterization")
 st.write(
     "DNA sequence analysis using Python, Biopython and Streamlit."
